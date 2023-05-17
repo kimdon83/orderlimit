@@ -26,8 +26,7 @@ curYM = todays.strftime('%Y%m')
 start = time.time()
 
 import json
-
-with open(r'C:\Users\KISS Admin\Desktop\IVYENT_DH\data.json', 'r') as f:
+with open(r'C:\OneDrive\OneDrive - Kiss Products Inc\Desktop\IVYENT_DH\data.json', 'r') as f:
     data = json.load(f)
 
 # get ID passwords from json
@@ -48,35 +47,8 @@ start = time.time()
 
 print("start to read full table")
 df_ft = pd.read_sql("""
-WITH mtrlT as (
-    SELECT T1.material, bo_qty/bo_days*BOdays_bf_pdt as bo_qty 
-    ,case WHEN po_date is not null then po_date else cast(GETDATE()+ adj_pdt+ 10 as date)  END as adj_po_date
-    FROM [ivy.mm.dim.bo] T1
-    LEFT JOIN [ivy.mm.dim.mtrl] T2 on T1.material =T2.material
-    LEFT join [ivy.mm.dim.mrp01] T3 on T3.material= T1.material
-    WHERE bo_bf_pdt='yes' and locn='total' and BOdays_bf_pdt>14 and bo_seq=1 and T2.ms='01' and bo_qty>0 and T3.total_stock>0 
-)
-, total1 as (
-    SELECT T0.material, T1.qty, SUM(T1.qty) as total_qty, SUM(T1.qty)/T1.qty as order#, T2.ip
-    FROM mtrlT T0
-    LEFT JOIN [ivy.sd.fact.order] T1 on T0.material=T1.material 
-    LEFT JOIN [ivy.mm.dim.mtrl] T2 on T1.material=T2.material
-    where act_date BETWEEN dateadd(D,1,eomonth(GETDATE(),-7)) and dateadd(D,1,eomonth(GETDATE(),-1)) and T2.ip is not null
-    and T2.ip>0
-    and T1.qty>0
-    GROUP BY T0.material, T1.qty, T2.ip
-), total2 as (
-    SELECT *,
-    sum(total_qty) over (Partition by material) as mtrl_total_qty,
-    sum(total_qty) over (PARTITION BY material ORDER BY qty rows BETWEEN unbounded PRECEDING and CURRENT ROW) as cumsumqty
-    FROM total1
-)
-SELECT material, qty as unit_qty, total_qty, order#, ip, mtrl_total_qty, cumsumqty,
-total_qty/mtrl_total_qty as prop,
-cumsumqty/mtrl_total_qty as cumsum_prop
-FROM total2
-ORDER BY material, qty
-
+SELECT * FROM orderlimit_orderpattern
+ORDER BY material,unit_qty
 """, con=engine)
 print("full table is ready")
 df_ft.head()
@@ -84,11 +56,14 @@ start = time.time()
 
 print("start to read full table")
 df_bo_qty = pd.read_sql("""
-    SELECT T1.material, bo_qty/bo_days*BOdays_bf_pdt as bo_qty 
-    ,case WHEN po_date is not null then po_date else cast(GETDATE()+ adj_pdt+ 10 as date)  END as adj_po_date
+    SELECT T1.material, bo_qty/bo_days*BOdays_bf_pdt as bo_qty, BOdays_bf_pdt as BOdays 
+    ,case WHEN po_date is not null then po_date else cast(GETDATE()+ adj_pdt+ 10 as date)  END as adj_po_date, T2.ip
+    ,T1.bo_amt, T1.strt_date as BOdate
     FROM [ivy.mm.dim.bo] T1
     LEFT JOIN [ivy.mm.dim.mtrl] T2 on T1.material =T2.material
-    LEFT join [ivy.mm.dim.mrp01] T3 on T3.material= T1.material
+    LEFT join (
+        SELECT material, SUM(total_stock) as total_stock FROM [ivy.mm.dim.mrp01] GROUP BY material
+    ) T3 on T3.material= T1.material
     WHERE bo_bf_pdt='yes' and locn='total' and BOdays_bf_pdt>14 and bo_seq=1 and T2.ms='01' and bo_qty>0 and T3.total_stock>0 
 """, con=engine)
 print("df_bo_qty is ready")
@@ -111,15 +86,19 @@ WITH ppp
     --avgMreorder within 3month, material, plant FROM [ivy.sd.fact.bill_ppp]
 AS (
     SELECT SUM(qty) AS reorder3M, material, plant
-    FROM [ivy.sd.fact.bill_ppp]
+    FROM [ivy.sd.fact.bill_ppp] T1
+    LEFT JOIN [ivy.mm.dim.shiptoparty] T2 on T1.shiptoparty=T2.shiptoparty
     WHERE act_date BETWEEN DATEADD(MM, - 3, DATEADD(DD, - 1, GETDATE())) AND DATEADD(DD, - 1, GETDATE()) AND ordsqc > 1
+    and T2.shiptoparty not in ('0011008549', '0011002886', '0011011500', '0011011419', '0011011147')
     GROUP BY material, plant
     ), backOrder
     -- avgMbo within 3month, material, plant FROM [ivy.sd.fact.bo] 
 AS (
     SELECT SUM(bo_qty) AS bo3M, material, plant
-    FROM [ivy.sd.fact.bo]
+    FROM [ivy.sd.fact.bo] T1
+    LEFT JOIN [ivy.mm.dim.shiptoparty] T2 on T1.shiptoparty=T2.shiptoparty
     WHERE (act_date BETWEEN DATEADD(MM, - 3, DATEADD(DD, - 1, GETDATE())) AND DATEADD(DD, - 1, GETDATE()))
+    and T2.shiptoparty not in ('0011008549', '0011002886', '0011011500', '0011011419', '0011011147')
     GROUP BY material, plant
     ), pppbo
 AS (
@@ -194,9 +173,23 @@ GROUP BY T0.material, mindate
 """,con=engine)
 df_demand.head()
 
-# %% df_ft1 : select columns
-df_ft1=df_ft.loc[:,["material","unit_qty","order#","total_qty","ip","prop","cumsum_prop"]].copy()
-df_ft1.head()
+# df_mtrl = pd.read_sql("""
+# WITH total2 as (
+#     SELECT material FROM orderlimit_orderpattern
+#     GROUP BY material
+# )
+# SELECT T2.*
+# FROM total2
+# LEFT JOIN [ivy.mm.dim.mtrl] T2 on total2.material= T2.material
+# ORDER BY T2.material
+# """,con=engine)
+# df_mtrl.head()
+# df_mtrl.to_csv("0. dim_mtrl_partial.csv",index=False)
+# add excel power query
+
+# %% 
+# add excel power query
+#df_ft.to_csv("1.order_pattern.csv",index=False)
 
 # %% df_ft2 : simulate with orderlimit_qty range(ip,ip*10,ip)
 df_ip = df_ft[['material', 'ip']].drop_duplicates().sort_values('material')
@@ -205,34 +198,78 @@ df_ft2 = pd.DataFrame()
 
 for material, ip in df_ip.groupby('material')['ip']:
     ip_in=ip.values[0]
-    for orderlimit_qty in range(ip_in,ip_in*10,ip_in):
+    df_ft_temp = df_ft.loc[df_ft['material'] == material].copy()
+    
+    # Create the range list and extend it with the values from the DataFrame column
+    loop_list = list(range(ip_in, ip_in * 10, ip_in))
+    loop_list.extend(df_ft_temp['unit_qty'].tolist())
+
+    # Remove duplicates by converting to a set and then back to a list
+    loop_list = list(set(loop_list))
+    loop_list.sort()
+
+    np_today = np.datetime64(datetime.now().date())
+    adj_po_date=df_bo_qty.loc[df_bo_qty['material']== material,"adj_po_date"].values[0]
+    days_difference = (adj_po_date - np_today).astype('timedelta64[D]').astype(int)
+    print(days_difference)
+
+    for orderlimit_qty in loop_list:
         print(material, orderlimit_qty)
-        df_ft_temp = df_ft.loc[df_ft['material'] == material].copy()
+        # df_ft_temp = df_ft.loc[df_ft['material'] == material].copy()
         df_ft_temp['orderlimit'] = orderlimit_qty
         df_ft_temp['unit_qty2']      = df_ft_temp.apply(lambda row: min(row['unit_qty'], orderlimit_qty), axis=1)
-        df_ft_temp['order#2']   = df_ft_temp.apply(lambda row: max(row['order#'],row['order#']*np.log10(10*row['unit_qty']/row['orderlimit'])), axis=1)
-        df_ft_temp['total_qty2']= df_ft_temp['unit_qty2']*df_ft_temp['order#2']
+        df_ft_temp['total#2']   = df_ft_temp.apply(lambda row: max(row['total#'],row['total#']\
+        *  (1+ (row['unit_qty']/row['orderlimit']-1)*0.3) )  \
+        *   1  , axis=1)
+        df_ft_temp['total_qty2']= df_ft_temp['unit_qty2']*df_ft_temp['total#2']
         df_ft_temp['Var_qty']= -df_ft_temp['total_qty2']+df_ft_temp['total_qty']
         df_ft2 = pd.concat([df_ft2, df_ft_temp], ignore_index=True)
 
 print("generating output is done")
+df_ft2=df_ft2.merge(df_demand.loc[:,["material","demandInperiod"]],how="left",on="material")
+df_ft2["Var_qty_with_demand"]=df_ft2["Var_qty"]/  df_ft2["mtrl_total_qty"]*df_ft2["demandInperiod"]
 
 # %%
+# df_ft2.to_csv('orderlimit_case.csv',index=False)
 
-df_ft2.to_csv('orderlimit_case.csv',index=False)
-
-var_qty_by_ordlimit= df_ft2.groupby(["material","orderlimit"]).agg({'Var_qty':'sum'})
+var_qty_by_ordlimit= df_ft2.groupby(["material","orderlimit"]).agg({'Var_qty_with_demand':'sum'})
 var_qty_by_ordlimit=var_qty_by_ordlimit.reset_index()
 var_qty_by_ordlimit.head()
 # %%
 var_qty_by_ordlimit=var_qty_by_ordlimit.merge(df_bo_qty,how='left',on='material')
-var_qty_by_ordlimit['diff']=np.abs(var_qty_by_ordlimit['Var_qty']-var_qty_by_ordlimit['bo_qty'])
-var_qty_by_ordlimit.to_csv('var_qty_by_ordlimit.csv',index=False)
-# Create a DataFrame to store the results
-result_df = pd.DataFrame(columns=['material', 'orderlimit'])
-min_orderlimits = var_qty_by_ordlimit.groupby('material')['diff'].idxmin().apply(lambda idx: var_qty_by_ordlimit.at[idx, 'orderlimit'])
-min_orderlimits.to_csv('min_orderlimits.csv',index=False)
+var_qty_by_ordlimit['bo_qty2']=-var_qty_by_ordlimit['Var_qty_with_demand']+var_qty_by_ordlimit['bo_qty']
+var_qty_by_ordlimit['diff']=abs(var_qty_by_ordlimit['bo_qty2'])
+var_qty_by_ordlimit['bo_amt2']=var_qty_by_ordlimit['bo_amt']/var_qty_by_ordlimit['bo_qty'] *var_qty_by_ordlimit['bo_qty2']
 
-var_qty_by_ordlimit.groupby('material')['diff'].idxmin().apply(lambda idx: var_qty_by_ordlimit.loc[idx])
+var_qty_by_ordlimit["BOdays2"]=var_qty_by_ordlimit.apply(lambda row \
+    :row["bo_qty2"]/ row["bo_qty"]*row["BOdays"] ,axis=1)
+# var_qty_by_ordlimit["bo_qty2"]=var_qty_by_ordlimit.apply(lambda row: \
+#       row["bo_qty"]*row["BOdays2"]/row["BOdays"],axis=1)
+var_qty_by_ordlimit["BOdate2"]=var_qty_by_ordlimit.apply(lambda row: datetime.strftime(row["BOdate"] \
+    + pd.to_timedelta( row["BOdays"]-row["BOdays2"], unit='D'),'%Y-%m-%d'), axis=1)
 
-print(var_qty_by_ordlimit)
+
+# result_df = pd.DataFrame(columns=['material', 'orderlimit'])
+min_orderlimits = var_qty_by_ordlimit.groupby('material')['diff'].idxmin().apply(lambda idx: var_qty_by_ordlimit.loc[idx, ["material","orderlimit"]])
+min_orderlimits = min_orderlimits.rename(columns={'orderlimit': 'recommendation_qty'})
+min_orderlimits=min_orderlimits.drop("material",axis=1).reset_index()
+
+var_qty_by_ordlimit=var_qty_by_ordlimit.merge(min_orderlimits,how='left',on='material')
+# var_qty_by_ordlimit.to_csv('2.var_qty_by_ordlimit.csv',index=False)
+
+result=var_qty_by_ordlimit.loc[:,["material","orderlimit","bo_qty",'bo_amt','BOdays','BOdate','bo_qty2','bo_amt2','BOdays2','BOdate2','recommendation_qty','adj_po_date']]
+
+# result_gb_ordlimit=var_qty_by_ordlimit.groupby('material')['diff'].idxmin().apply(lambda idx: var_qty_by_ordlimit.loc[idx])
+# result_gb_ordlimit=result_gb_ordlimit.drop("material",axis=1).reset_index()
+# result_gb_ordlimit.to_csv('4.result group by mtrl, orderlimit_qty.csv',index=False)
+
+# %%
+print("ready for upload")
+
+# %%
+result.to_sql('orderlimit_planner', engine, schema = "dbo", if_exists='replace', index=False, chunksize=1000)
+print("upload successful")
+
+# %%
+print('done')
+
